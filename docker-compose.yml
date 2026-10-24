@@ -1,0 +1,39 @@
+# Testbed for duplicate-side-effect defenses. Synthetic data only.
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_USER: tb
+      POSTGRES_PASSWORD: tb
+      POSTGRES_DB: tb
+    command: ["postgres", "-c", "max_connections=300"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tb"]
+      interval: 2s
+      retries: 30
+
+  pubsub:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:575.0.0-emulators
+    command: ["gcloud", "beta", "emulators", "pubsub", "start", "--host-port=0.0.0.0:8085", "--project=testbed"]
+
+  gcs:
+    image: fsouza/fake-gcs-server:1.49.3
+    command: ["-scheme", "http", "-port", "4443", "-backend", "memory", "-public-host", "gcs:4443"]
+
+  runner:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pubsub:
+        condition: service_started
+      gcs:
+        condition: service_started
+    environment:
+      TB_DSN: postgresql://tb:tb@postgres:5432/tb
+      PUBSUB_EMULATOR_HOST: pubsub:8085
+      PUBSUB_PROJECT_ID: testbed
+      STORAGE_EMULATOR_HOST: http://gcs:4443
+    volumes:
+      - ./results:/app/results
+      - ./testbed:/app/testbed
