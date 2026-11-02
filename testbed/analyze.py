@@ -67,7 +67,8 @@ def e2(rows):
 
 def e3(rows):
     out = []
-    for (scenario, variant), rs in group(rows, ["scenario", "variant"]).items():
+    for (scenario, variant), rs in group([r for r in rows if r.get("rush") != "1"],
+                                         ["scenario", "variant"]).items():
         rel = sum(int(r["releases"]) for r in rs)
         out.append([scenario, variant, len(rs),
                     f"{1000 * sum(int(r['duplicate_lines']) for r in rs) / rel:.0f}",
@@ -78,6 +79,21 @@ def e3(rows):
     return table(["scenario", "variant", "trials", "duplicate lines per 1,000 releases",
                   "split keys per trial (of 30)", "missing releases (total)",
                   "merge latency median (s)", "p95 (s)"], out)
+
+
+def e3_rush(rows):
+    out = []
+    for (variant,), rs in group([r for r in rows if r.get("rush") == "1"], ["variant"]).items():
+        rel = sum(int(r["releases"]) for r in rs)
+        out.append([variant, len(rs), f"{mean(r['releases'] for r in rs) / 30:.1f}",
+                    f"{mean(r['outputs_per_key'] for r in rs):.2f}",
+                    f"{1000 * sum(int(r['duplicate_lines']) for r in rs) / rel:.0f}",
+                    sum(int(r["missing_releases"]) for r in rs),
+                    f"{mean(r['order_wait_median_s'] for r in rs):.2f}",
+                    f"{mean(r['order_wait_p95_s'] for r in rs):.2f}"])
+    return table(["variant", "trials", "orders per key", "merged outputs per key",
+                  "duplicate lines per 1,000 releases", "missing releases (total)",
+                  "wait from order to output, median (s)", "p95 (s)"], out)
 
 
 def e4(rows):
@@ -104,6 +120,8 @@ def main():
                             ("E4: file claim", e4, "e4_file_claim.csv")):
         rows = load(name)
         parts.append(f"## {title}\n\n" + (fn(rows) if rows else "_no results yet_") + "\n")
+        if fn is e3 and any(r.get("rush") == "1" for r in rows):
+            parts.append("### E3: rush orders that keep arriving\n\n" + e3_rush(rows) + "\n")
     text = "\n".join(parts)
     with open(os.path.join(from_dir, "summary.md"), "w") as f:
         f.write(text)

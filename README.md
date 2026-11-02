@@ -10,7 +10,7 @@ Everything here is a clean-room re-implementation, using synthetic data. It cont
 |---|---|---|
 | **E1** release claim | Concurrent triggers select overlapping work | read-then-update vs. conditional claim (`UPDATE … WHERE status = 'ELIGIBLE' RETURNING`) |
 | **E2** message ledger | Redelivery; transient errors at the ledger insert; errors during processing | no ledger; catch-all ("any error means duplicate"); duplicate-key-only; ledger and side effect in one transaction |
-| **E3** merge | Partial outputs merged into one per key; late starters, redelivery, consumer crash | merge per message; per message with an advisory lock; time window; scheduled barrier with deferred ack (with and without a settle window) |
+| **E3** merge | Partial outputs merged into one per key; late starters, redelivery, consumer crash; orders that keep arriving (rush) | merge per message; per message with an advisory lock; time window; scheduled barrier with deferred ack that checks the release rows (with and without a settle window) or the orders of the key (with no wait, or a 3 s or 6 s wait) |
 | **E4** file claim | Workers competing for the same inbound files; a lost response on delete | no claim; copy-then-delete that moves the file to an error folder on failure; copy-then-delete that skips the file if it is already in processing; conditional create (generation precondition) |
 
 ## Running
@@ -18,7 +18,7 @@ Everything here is a clean-room re-implementation, using synthetic data. It cont
 Requires Docker.
 
 ```sh
-./run_all.sh                                        # about 55 minutes; writes results/*.csv
+./run_all.sh                                        # about 70 minutes; writes results/*.csv
 docker compose run --rm runner testbed.analyze      # writes results/summary.md
 docker compose down
 ```
@@ -43,6 +43,7 @@ Seeds fix the workload: E1's request sets and arrival times, E2's per-message fa
 
 - **Side effects:** each is a database row, standing in for a file line or partner call.
 - **E2 push delivery:** modelled with streaming pull and concurrent callbacks; a lost ack is modelled as a nack.
+- **E3 orders:** each release carries one order. The order-based barrier checks one order table; real systems may read several.
 - **E3 merge commit:** the barrier's conditional update and its output record commit in one transaction. Production systems that write the file to object storage first have an extra crash window, which this testbed does not model.
 - **E4 conditional claim:** the storage emulator ignores generation preconditions on copy, but honours them on upload. The conditional variant therefore reads the file and uploads it to `processing/` with "create only if absent". Cloud Storage supports the precondition on copy directly.
 - **E4 lost response:** modelled as a delete that completes but raises an error to the caller.

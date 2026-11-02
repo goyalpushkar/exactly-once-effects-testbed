@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runs every experiment and writes CSVs to results/. About 55 minutes on a laptop.
+# Runs every experiment and writes CSVs to results/. About 70 minutes on a laptop.
 set -e
 docker compose up -d postgres pubsub gcs
 docker compose run --rm runner testbed.e1_claim --seeds 10

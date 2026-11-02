@@ -16,12 +16,25 @@ Variants:
                 them with a conditional update (merged IS NULL) and ack only the
                 messages of merged keys; others are released for the next run
   barrier       as barrier_s0, plus a settle window: the newest release of the key
-                must be older than SETTLE_S (the M5 design)
+                must be older than SETTLE_S
+  barrier_orders     scheduled pull; merge a key when none of its orders is still
+                     ELIGIBLE (not released yet) and all its releases are COMPLETE. The
+                     order table holds every order of the key before its release starts,
+                     so a release that has not started yet still holds the merge (the
+                     M5 check for normal releases)
+  barrier_orders_w3  as barrier_orders, plus a wait: every release of the key must be
+  barrier_orders_w6  older than 3 s / 6 s (the M5 check for time-based rules, used to
+                     batch orders that keep arriving into one output)
 
 Faults:
   start_spread  releases of a key start up to this many seconds apart (late starters)
   p_lost_ack    an ack is lost after processing, so the message is redelivered
   p_crash       the consumer fails after writing the output but before acking
+
+Scenarios: baseline, late_start, redelivery and crash release 2-4 orders per key, whose
+orders all exist before the releases start. In rush, orders keep arriving one at a time
+(6-10 per key, about 2.5 s apart on average) and each is released on its own as it
+arrives; the order table only holds the orders that have arrived so far.
 
 Usage: python -m testbed.e3_merge [--seeds 3]
 """
@@ -42,19 +55,29 @@ N_KEYS = 30
 INTERVAL_S = 1.0  # schedule of the pull-based variants
 WINDOW_S = 3.0  # time_window variant
 SETTLE_S = 3.0  # barrier variant
+WAITS = {"barrier_orders": 0.0, "barrier_orders_w3": 3.0, "barrier_orders_w6": 6.0}
+RUSH_ORDERS = (6, 10)  # orders per key in the rush scenario
+RUSH_GAP_S = 2.5  # mean time between rush orders of a key
 DRAIN_S = 12.0
 
 SCENARIOS = {
-    "baseline":   {"start_spread": 1.0, "p_lost_ack": 0.0, "p_crash": 0.0},
-    "late_start": {"start_spread": 6.0, "p_lost_ack": 0.0, "p_crash": 0.0},
-    "redelivery": {"start_spread": 1.0, "p_lost_ack": 0.1, "p_crash": 0.0},
-    "crash":      {"start_spread": 1.0, "p_lost_ack": 0.0, "p_crash": 0.05},
+    "baseline":   {"start_spread": 1.0, "p_lost_ack": 0.0, "p_crash": 0.0, "rush": 0},
+    "late_start": {"start_spread": 6.0, "p_lost_ack": 0.0, "p_crash": 0.0, "rush": 0},
+    "redelivery": {"start_spread": 1.0, "p_lost_ack": 0.1, "p_crash": 0.0, "rush": 0},
+    "crash":      {"start_spread": 1.0, "p_lost_ack": 0.0, "p_crash": 0.05, "rush": 0},
+    "rush":       {"start_spread": 0.0, "p_lost_ack": 0.0, "p_crash": 0.0, "rush": 1},
 }
-VARIANTS = ("push_naive", "push_lock", "time_window", "barrier_s0", "barrier")
+VARIANTS = ("push_naive", "push_lock", "time_window", "barrier_s0", "barrier", "barrier_orders")
+RUSH_VARIANTS = ("time_window", "barrier_s0", "barrier_orders", "barrier_orders_w3",
+                 "barrier_orders_w6")
 
 
 def setup(conn):
-    conn.execute("DROP TABLE IF EXISTS e3_releases, e3_outputs, e3_output_lines")
+    conn.execute("DROP TABLE IF EXISTS e3_orders, e3_releases, e3_outputs, e3_output_lines")
+    conn.execute(
+        "CREATE TABLE e3_orders (key int, rid int, status text, created_at double precision,"
+        " PRIMARY KEY (key, rid))"
+    )
     conn.execute(
         "CREATE TABLE e3_releases (key int, rid int, status text, created_at double precision,"
         " completed_at double precision, merged_output int, PRIMARY KEY (key, rid))"
@@ -65,13 +88,25 @@ def setup(conn):
     conn.execute("CREATE TABLE e3_output_lines (output_id int, key int, rid int)")
 
 
-def plan_releases(seed, start_spread):
-    """(start, duration) offsets for every release of every key."""
+def plan_releases(seed, scenario):
+    """(order arrival, release start, duration) offsets for every release of every key.
+
+    Each release carries one order. Outside the rush scenario all orders exist at the
+    start; in rush each order arrives shortly before its own release starts.
+    """
+    s = SCENARIOS[scenario]
     plan = []
     for key in range(N_KEYS):
         rng = rng_for("e3-plan", seed, key)
-        for rid in range(rng.randint(2, 4)):
-            plan.append((key, rid, rng.uniform(0, start_spread), rng.uniform(0.5, 2.0)))
+        if s["rush"]:
+            at = rng.uniform(0, RUSH_GAP_S)
+            for rid in range(rng.randint(*RUSH_ORDERS)):
+                plan.append((key, rid, at, at + rng.uniform(0.1, 0.5), rng.uniform(0.3, 1.0)))
+                at += rng.expovariate(1 / RUSH_GAP_S)
+        else:
+            for rid in range(rng.randint(2, 4)):
+                plan.append((key, rid, 0.0, rng.uniform(0, s["start_spread"]),
+                             rng.uniform(0.5, 2.0)))
     return plan
 
 
@@ -98,21 +133,31 @@ class Simulator(threading.Thread):
 
     def run(self):
         events = []
-        for key, rid, start, dur in self.plan:
-            events.append((start, "start", key, rid))
-            events.append((start + dur, "complete", key, rid))
+        for key, rid, order_at, start, dur in self.plan:
+            events.append((order_at, 0, "order", key, rid))
+            events.append((start, 1, "start", key, rid))
+            events.append((start + dur, 2, "complete", key, rid))
         events.sort()
         t0 = time.monotonic()
         with connect() as conn:
-            for at, kind, key, rid in events:
+            for at, _, kind, key, rid in events:
                 delay = at - (time.monotonic() - t0)
                 if delay > 0:
                     time.sleep(delay)
-                if kind == "start":
+                if kind == "order":
                     conn.execute(
-                        "INSERT INTO e3_releases VALUES (%s, %s, 'RUNNING', %s, NULL, NULL)",
-                        (key, rid, time.time()),
+                        "INSERT INTO e3_orders VALUES (%s, %s, 'ELIGIBLE', %s)", (key, rid, time.time())
                     )
+                elif kind == "start":
+                    with conn.transaction():
+                        conn.execute(
+                            "INSERT INTO e3_releases VALUES (%s, %s, 'RUNNING', %s, NULL, NULL)",
+                            (key, rid, time.time()),
+                        )
+                        conn.execute(
+                            "UPDATE e3_orders SET status = 'RELEASED' WHERE key = %s AND rid = %s",
+                            (key, rid),
+                        )
                 else:
                     conn.execute(
                         "UPDATE e3_releases SET status = 'COMPLETE', completed_at = %s"
@@ -139,6 +184,13 @@ class Faults:
 def all_complete(conn, key):
     pending = conn.execute(
         "SELECT count(*) FILTER (WHERE status <> 'COMPLETE') FROM e3_releases WHERE key = %s", (key,)
+    ).fetchone()[0]
+    return pending == 0
+
+
+def no_unreleased_orders(conn, key):
+    pending = conn.execute(
+        "SELECT count(*) FROM e3_orders WHERE key = %s AND status = 'ELIGIBLE'", (key,)
     ).fetchone()[0]
     return pending == 0
 
@@ -208,7 +260,7 @@ def time_window_job(stop, faults):
             stop.wait(INTERVAL_S)
 
 
-def barrier_job(stop, faults, subscriber, sub, settle_s):
+def barrier_job(stop, faults, subscriber, sub, settle_s, check_orders=False):
     with connect(autocommit=False) as conn:
         while not stop.is_set():
             received = []
@@ -233,6 +285,8 @@ def barrier_job(stop, faults, subscriber, sub, settle_s):
                         "SELECT max(created_at) FROM e3_releases WHERE key = %s", (key,)
                     ).fetchone()[0]
                     ready = all_complete(conn, key) and newest is not None and now - newest >= settle_s
+                    if ready and check_orders:
+                        ready = no_unreleased_orders(conn, key)
                     merged = False
                     if ready:
                         out = conn.execute(
@@ -274,6 +328,8 @@ def measure(conn):
         "SELECT key, rid, count(*) FROM e3_output_lines GROUP BY key, rid"
     ).fetchall()
     releases = conn.execute("SELECT key, rid, completed_at FROM e3_releases").fetchall()
+    ordered = dict(((k, r), t) for k, r, t in conn.execute(
+        "SELECT key, rid, created_at FROM e3_orders").fetchall())
     outputs = conn.execute("SELECT key, count(*) FROM e3_outputs GROUP BY key").fetchall()
     first_out = dict(
         ((k, r), t) for k, r, t in conn.execute(
@@ -294,6 +350,9 @@ def measure(conn):
             latencies.append(first_out[(k, r)] - done)
     latencies.sort()
     p95 = latencies[int(0.95 * (len(latencies) - 1))] if latencies else None
+    waits = sorted(first_out[kr] - ordered[kr] for kr in first_out if kr in ordered)
+    wait_p95 = waits[int(0.95 * (len(waits) - 1))] if waits else None
+    keys = len({k for k, _, _ in releases})
     return {
         "releases": len(releases),
         "outputs": sum(n for _, n in outputs),
@@ -302,6 +361,9 @@ def measure(conn):
         "missing_releases": missing,
         "latency_median_s": round(statistics.median(latencies), 2) if latencies else None,
         "latency_p95_s": round(p95, 2) if p95 is not None else None,
+        "outputs_per_key": round(sum(n for _, n in outputs) / keys, 2) if keys else None,
+        "order_wait_median_s": round(statistics.median(waits), 2) if waits else None,
+        "order_wait_p95_s": round(wait_p95, 2) if wait_p95 is not None else None,
     }
 
 
@@ -321,6 +383,11 @@ def run_trial(variant, scenario, seed):
             )
         elif variant == "time_window":
             job = threading.Thread(target=time_window_job, args=(stop, faults), daemon=True)
+        elif variant in WAITS:
+            job = threading.Thread(
+                target=barrier_job, args=(stop, faults, subscriber, sub, WAITS[variant], True),
+                daemon=True,
+            )
         else:
             settle = 0.0 if variant == "barrier_s0" else SETTLE_S
             job = threading.Thread(
@@ -328,7 +395,7 @@ def run_trial(variant, scenario, seed):
             )
         if job:
             job.start()
-        sim = Simulator(plan_releases(seed, SCENARIOS[scenario]["start_spread"]), publisher, topic)
+        sim = Simulator(plan_releases(seed, scenario), publisher, topic)
         sim.start()
         sim.done.wait()
         time.sleep(DRAIN_S)
@@ -352,11 +419,13 @@ def run_trial(variant, scenario, seed):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seeds", type=int, default=3)
-    parser.add_argument("--variants", default=",".join(VARIANTS))
+    parser.add_argument("--variants", default="", help="default: VARIANTS, or RUSH_VARIANTS for rush")
     parser.add_argument("--scenarios", default=",".join(SCENARIOS))
     args = parser.parse_args()
     for scenario in args.scenarios.split(","):
-        for variant in args.variants.split(","):
+        default = RUSH_VARIANTS if SCENARIOS[scenario]["rush"] else VARIANTS
+        variants = args.variants.split(",") if args.variants else default
+        for variant in variants:
             for seed in range(args.seeds):
                 row = run_trial(variant, scenario, seed)
                 print(row, flush=True)
