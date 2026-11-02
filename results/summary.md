@@ -54,26 +54,40 @@
 
 | scenario | variant | trials | duplicate lines per 1,000 releases | split keys per trial (of 30) | missing releases (total) | merge latency median (s) | p95 (s) |
 |---|---|---|---|---|---|---|---|
-| baseline | push_naive | 3 | 89 | 2.7 | 0 | 0.04 | 0.06 |
+| baseline | push_naive | 3 | 111 | 3.3 | 0 | 0.04 | 0.06 |
 | baseline | push_lock | 3 | 0 | 0.3 | 0 | 0.05 | 0.07 |
-| baseline | time_window | 3 | 0 | 0.0 | 0 | 2.72 | 3.41 |
-| baseline | barrier_s0 | 3 | 0 | 0.0 | 0 | 0.51 | 0.89 |
-| baseline | barrier | 3 | 0 | 0.0 | 0 | 1.96 | 2.44 |
-| late_start | push_naive | 3 | 550 | 23.3 | 0 | 0.05 | 0.07 |
+| baseline | time_window | 3 | 0 | 0.0 | 0 | 2.71 | 3.42 |
+| baseline | barrier_s0 | 3 | 0 | 0.0 | 0 | 0.53 | 0.92 |
+| baseline | barrier | 3 | 0 | 0.0 | 0 | 1.98 | 2.45 |
+| baseline | barrier_orders | 3 | 0 | 0.0 | 0 | 0.53 | 0.91 |
+| late_start | push_naive | 3 | 542 | 23.7 | 0 | 0.05 | 0.07 |
 | late_start | push_lock | 3 | 0 | 23.7 | 0 | 0.05 | 0.07 |
-| late_start | time_window | 3 | 0 | 14.0 | 0 | 2.71 | 3.90 |
-| late_start | barrier_s0 | 3 | 0 | 19.3 | 0 | 0.55 | 0.98 |
-| late_start | barrier | 3 | 0 | 4.7 | 0 | 2.15 | 2.97 |
-| redelivery | push_naive | 3 | 258 | 6.3 | 0 | 0.05 | 0.07 |
-| redelivery | push_lock | 3 | 0 | 0.3 | 0 | 0.05 | 0.06 |
-| redelivery | time_window | 3 | 0 | 0.0 | 0 | 2.73 | 3.42 |
-| redelivery | barrier_s0 | 3 | 0 | 0.0 | 0 | 0.52 | 0.91 |
-| redelivery | barrier | 3 | 0 | 0.0 | 0 | 1.97 | 2.45 |
-| crash | push_naive | 3 | 144 | 4.7 | 0 | 0.05 | 0.07 |
-| crash | push_lock | 3 | 0 | 0.3 | 0 | 0.04 | 0.07 |
-| crash | time_window | 3 | 0 | 0.0 | 0 | 2.72 | 3.42 |
+| late_start | time_window | 3 | 0 | 14.3 | 0 | 2.80 | 3.91 |
+| late_start | barrier_s0 | 3 | 0 | 19.7 | 0 | 0.53 | 0.96 |
+| late_start | barrier | 3 | 0 | 5.0 | 0 | 2.16 | 2.99 |
+| late_start | barrier_orders | 3 | 0 | 0.0 | 0 | 0.52 | 0.97 |
+| redelivery | push_naive | 3 | 269 | 6.0 | 0 | 0.04 | 0.07 |
+| redelivery | push_lock | 3 | 0 | 0.3 | 0 | 0.05 | 0.07 |
+| redelivery | time_window | 3 | 0 | 0.0 | 0 | 2.72 | 3.42 |
+| redelivery | barrier_s0 | 3 | 0 | 0.0 | 0 | 0.51 | 0.89 |
+| redelivery | barrier | 3 | 0 | 0.0 | 0 | 1.97 | 2.44 |
+| redelivery | barrier_orders | 3 | 0 | 0.0 | 0 | 0.51 | 0.89 |
+| crash | push_naive | 3 | 155 | 4.3 | 0 | 0.04 | 0.07 |
+| crash | push_lock | 3 | 0 | 0.3 | 0 | 0.05 | 0.07 |
+| crash | time_window | 3 | 0 | 0.0 | 0 | 2.71 | 3.42 |
 | crash | barrier_s0 | 3 | 0 | 0.0 | 0 | 0.52 | 0.90 |
-| crash | barrier | 3 | 0 | 0.0 | 0 | 1.98 | 2.45 |
+| crash | barrier | 3 | 0 | 0.0 | 0 | 1.97 | 2.44 |
+| crash | barrier_orders | 3 | 0 | 0.0 | 0 | 0.51 | 0.90 |
+
+### E3: rush orders that keep arriving
+
+| variant | trials | orders per key | merged outputs per key | duplicate lines per 1,000 releases | missing releases (total) | wait from order to output, median (s) | p95 (s) |
+|---|---|---|---|---|---|---|---|
+| time_window | 3 | 7.7 | 3.62 | 0 | 0 | 3.97 | 4.97 |
+| barrier_s0 | 3 | 7.7 | 5.53 | 0 | 0 | 1.58 | 2.89 |
+| barrier_orders | 3 | 7.7 | 4.91 | 0 | 0 | 1.69 | 3.32 |
+| barrier_orders_w3 | 3 | 7.7 | 2.45 | 0 | 0 | 5.58 | 13.23 |
+| barrier_orders_w6 | 3 | 7.7 | 1.52 | 0 | 0 | 11.14 | 22.61 |
 
 ## E4: file claim
 
