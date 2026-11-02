@@ -22,9 +22,13 @@ Variants:
                      order table holds every order of the key before its release starts,
                      so a release that has not started yet still holds the merge (the
                      M5 check for normal releases)
-  barrier_orders_w3  as barrier_orders, plus a wait: every release of the key must be
-  barrier_orders_w6  older than 3 s / 6 s (the M5 check for time-based rules, used to
-                     batch orders that keep arriving into one output)
+
+Rush variants (time-based rules; release status is not verified, so no order holds
+another). A scheduled job runs every RUSH_INTERVAL_S:
+  rush_no_merge  sends one output per completed release
+  rush_w0        merges every completed release not merged yet into one output per key
+  rush_w5        merges, into one output per key, only the completed releases created at
+  rush_w10       least 5 s / 10 s ago; newer releases wait for a later run
 
 Faults:
   start_spread  releases of a key start up to this many seconds apart (late starters)
@@ -33,8 +37,9 @@ Faults:
 
 Scenarios: baseline, late_start, redelivery and crash release 2-4 orders per key, whose
 orders all exist before the releases start. In rush, orders keep arriving one at a time
-(6-10 per key, about 2.5 s apart on average) and each is released on its own as it
-arrives; the order table only holds the orders that have arrived so far.
+(8-12 per key, about 1 s apart on average) and each is released on its own as it arrives.
+The rush timings are scaled so that 1 s stands for 1 minute: a 5-minute merge schedule
+and waits of 5 and 10 minutes.
 
 Usage: python -m testbed.e3_merge [--seeds 3]
 """
@@ -55,10 +60,12 @@ N_KEYS = 30
 INTERVAL_S = 1.0  # schedule of the pull-based variants
 WINDOW_S = 3.0  # time_window variant
 SETTLE_S = 3.0  # barrier variant
-WAITS = {"barrier_orders": 0.0, "barrier_orders_w3": 3.0, "barrier_orders_w6": 6.0}
-RUSH_ORDERS = (6, 10)  # orders per key in the rush scenario
-RUSH_GAP_S = 2.5  # mean time between rush orders of a key
+RUSH_ORDERS = (8, 12)  # orders per key in the rush scenario
+RUSH_GAP_S = 1.0  # mean time between rush orders of a key
+RUSH_INTERVAL_S = 5.0  # schedule of the rush merge job
+RUSH_WAITS = {"rush_no_merge": 0.0, "rush_w0": 0.0, "rush_w5": 5.0, "rush_w10": 10.0}
 DRAIN_S = 12.0
+RUSH_DRAIN_S = 20.0
 
 SCENARIOS = {
     "baseline":   {"start_spread": 1.0, "p_lost_ack": 0.0, "p_crash": 0.0, "rush": 0},
@@ -68,8 +75,7 @@ SCENARIOS = {
     "rush":       {"start_spread": 0.0, "p_lost_ack": 0.0, "p_crash": 0.0, "rush": 1},
 }
 VARIANTS = ("push_naive", "push_lock", "time_window", "barrier_s0", "barrier", "barrier_orders")
-RUSH_VARIANTS = ("time_window", "barrier_s0", "barrier_orders", "barrier_orders_w3",
-                 "barrier_orders_w6")
+RUSH_VARIANTS = ("rush_no_merge", "rush_w0", "rush_w5", "rush_w10")
 
 
 def setup(conn):
@@ -321,6 +327,56 @@ def barrier_job(stop, faults, subscriber, sub, settle_s, check_orders=False):
             stop.wait(INTERVAL_S)
 
 
+def rush_job(stop, faults, subscriber, sub, wait_s, merge):
+    """Time-based merge without verification: take what is old enough, send it together."""
+    with connect(autocommit=False) as conn:
+        while not stop.is_set():
+            received = []
+            while True:
+                try:
+                    resp = subscriber.pull(
+                        request={"subscription": sub, "max_messages": 1000}, timeout=0.5
+                    )
+                except Exception:
+                    break
+                if not resp.received_messages:
+                    break
+                received.extend(resp.received_messages)
+            by_key = {}
+            for m in received:
+                d = json.loads(m.message.data)
+                by_key.setdefault(d["key"], []).append((d["rid"], m.ack_id))
+            ack, release = [], []
+            cutoff = time.time() - wait_s
+            for key, items in by_key.items():
+                with conn.transaction():
+                    due = [r[0] for r in conn.execute(
+                        "SELECT rid FROM e3_releases WHERE key = %s AND status = 'COMPLETE'"
+                        " AND merged_output IS NULL AND created_at <= %s AND rid = ANY(%s)",
+                        (key, cutoff, [rid for rid, _ in items])).fetchall()]
+                    groups = [due] if merge else [[r] for r in due]
+                    for rids in groups:
+                        if rids:
+                            out = write_output(conn, key, rids)
+                            conn.execute(
+                                "UPDATE e3_releases SET merged_output = %s"
+                                " WHERE key = %s AND rid = ANY(%s) AND merged_output IS NULL",
+                                (out, key, rids),
+                            )
+                    merged = {r[0] for r in conn.execute(
+                        "SELECT rid FROM e3_releases WHERE key = %s AND merged_output IS NOT NULL",
+                        (key,)).fetchall()}
+                for rid, ack_id in items:
+                    (ack if rid in merged else release).append(ack_id)
+            if ack:
+                subscriber.acknowledge(request={"subscription": sub, "ack_ids": ack})
+            if release:
+                subscriber.modify_ack_deadline(
+                    request={"subscription": sub, "ack_ids": release, "ack_deadline_seconds": 0}
+                )
+            stop.wait(RUSH_INTERVAL_S)
+
+
 # ---- trial ---------------------------------------------------------------------
 
 def measure(conn):
@@ -383,10 +439,14 @@ def run_trial(variant, scenario, seed):
             )
         elif variant == "time_window":
             job = threading.Thread(target=time_window_job, args=(stop, faults), daemon=True)
-        elif variant in WAITS:
+        elif variant in RUSH_WAITS:
             job = threading.Thread(
-                target=barrier_job, args=(stop, faults, subscriber, sub, WAITS[variant], True),
-                daemon=True,
+                target=rush_job, daemon=True,
+                args=(stop, faults, subscriber, sub, RUSH_WAITS[variant], variant != "rush_no_merge"),
+            )
+        elif variant == "barrier_orders":
+            job = threading.Thread(
+                target=barrier_job, args=(stop, faults, subscriber, sub, 0.0, True), daemon=True
             )
         else:
             settle = 0.0 if variant == "barrier_s0" else SETTLE_S
@@ -398,7 +458,7 @@ def run_trial(variant, scenario, seed):
         sim = Simulator(plan_releases(seed, scenario), publisher, topic)
         sim.start()
         sim.done.wait()
-        time.sleep(DRAIN_S)
+        time.sleep(RUSH_DRAIN_S if SCENARIOS[scenario]["rush"] else DRAIN_S)
         stop.set()
         if stream:
             stream.cancel()

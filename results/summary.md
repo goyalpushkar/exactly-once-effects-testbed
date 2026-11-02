@@ -83,11 +83,10 @@
 
 | variant | trials | orders per key | merged outputs per key | duplicate lines per 1,000 releases | missing releases (total) | wait from order to output, median (s) | p95 (s) |
 |---|---|---|---|---|---|---|---|
-| time_window | 3 | 7.7 | 3.62 | 0 | 0 | 3.97 | 4.97 |
-| barrier_s0 | 3 | 7.7 | 5.53 | 0 | 0 | 1.58 | 2.89 |
-| barrier_orders | 3 | 7.7 | 4.91 | 0 | 0 | 1.69 | 3.32 |
-| barrier_orders_w3 | 3 | 7.7 | 2.45 | 0 | 0 | 5.58 | 13.23 |
-| barrier_orders_w6 | 3 | 7.7 | 1.52 | 0 | 0 | 11.14 | 22.61 |
+| rush_no_merge | 3 | 9.7 | 9.72 | 0 | 0 | 3.72 | 5.75 |
+| rush_w0 | 3 | 9.7 | 2.53 | 0 | 0 | 3.70 | 5.72 |
+| rush_w5 | 3 | 9.7 | 2.46 | 0 | 0 | 8.29 | 10.02 |
+| rush_w10 | 3 | 9.7 | 2.46 | 0 | 0 | 13.33 | 15.05 |
 
 ## E4: file claim
 
