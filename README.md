@@ -9,7 +9,7 @@ Everything here is a clean-room re-implementation, using synthetic data. It cont
 | Experiment | Hazard | Variants |
 |---|---|---|
 | **E1** release claim | Concurrent triggers select overlapping work | read-then-update vs. conditional claim (`UPDATE … WHERE status = 'ELIGIBLE' RETURNING`) |
-| **E2** message ledger | Redelivery; transient errors at the ledger insert; errors during processing | no ledger; catch-all ("any error means duplicate"); duplicate-key-only; ledger and side effect in one transaction |
+| **E2** message ledger | Redelivery; transient errors at the ledger insert; errors during processing | no ledger; catch-all ("any error means duplicate"); duplicate-key-only; duplicate-key-only that deletes its ledger row when processing fails; ledger and side effect in one transaction |
 | **E3** merge | Partial outputs merged into one per key; late starters, redelivery, consumer crash; orders that keep arriving (rush) | merge per message; per message with an advisory lock; time window; scheduled barrier with deferred ack that checks the release rows (with and without a settle window) or the orders of the key (with no wait, or a 3 s or 6 s wait) |
 | **E4** file claim | Workers competing for the same inbound files; a lost response on delete | no claim; copy-then-delete that moves the file to an error folder on failure; copy-then-delete that skips the file if it is already in processing; conditional create (generation precondition) |
 

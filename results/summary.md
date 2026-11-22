@@ -49,6 +49,10 @@
 | all_faults | catch_all | 5 | 0.0 | 102.7 | 1.12 | 0 |
 | all_faults | dup_key_only | 5 | 0.0 | 52.7 | 1.19 | 0 |
 | all_faults | transactional | 5 | 0.0 | 0.0 | 1.20 | 0 |
+| redelivery | dup_key_release | 5 | 0.0 | 0.0 | 1.08 | 0 |
+| redelivery+ledger_err | dup_key_release | 5 | 0.0 | 0.0 | 1.14 | 0 |
+| redelivery+process_err | dup_key_release | 5 | 0.0 | 0.0 | 1.14 | 0 |
+| all_faults | dup_key_release | 5 | 0.0 | 0.0 | 1.20 | 0 |
 
 ## E3: merge barrier
 
