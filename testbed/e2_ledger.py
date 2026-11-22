@@ -17,6 +17,9 @@ Variants:
                  message is acked (the behaviour observed in the studied system)
   dup_key_only   ledger insert; only a unique-key violation means "already processed";
                  other errors nack so the message is redelivered
+  dup_key_release  dup_key_only, and when processing fails the handler deletes the ledger
+                 row it inserted before it nacks, so the redelivery runs the work again
+                 (the behaviour of the studied system since November 2026)
   transactional  ledger insert and side effect in one transaction; any error rolls both
                  back and nacks (the textbook idempotent receiver)
 
@@ -40,7 +43,7 @@ SCENARIOS = {
     "redelivery+process_err": {"p_lost_ack": 0.10, "q_ledger": 0.00, "r_process": 0.05},
     "all_faults":        {"p_lost_ack": 0.10, "q_ledger": 0.05, "r_process": 0.05},
 }
-VARIANTS = ("no_ledger", "catch_all", "dup_key_only", "transactional")
+VARIANTS = ("no_ledger", "catch_all", "dup_key_only", "dup_key_release", "transactional")
 MAX_ATTEMPTS_BEFORE_STOP = 50  # safety valve; never reached in practice
 
 
@@ -141,6 +144,10 @@ class Handler:
                 )
             return "ack"
         except InjectedFault:
+            if v == "dup_key_release":
+                # release the ledger row this delivery inserted, so the retry is not taken for a duplicate
+                with conn.transaction():
+                    conn.execute("DELETE FROM e2_ledger WHERE message_id = %s", (mid,))
             return "nack"
 
 
